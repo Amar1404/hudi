@@ -63,7 +63,7 @@ class TestClusteringProcedure extends HoodieSparkProcedureTestBase {
         spark.sql(s"insert into $tableName values(1, 'a1', 10, 1000)")
         spark.sql(s"insert into $tableName values(2, 'a2', 10, 1001)")
         spark.sql(s"insert into $tableName values(3, 'a3', 10, 1002)")
-        val client = HoodieCLIUtils.createHoodieClientFromPath(spark, basePath, Map.empty)
+        val client = HoodieCLIUtils.createHoodieWriteClient(spark, basePath, Map.empty, Option(tableName))
         // Generate the first clustering plan
         val firstScheduleInstant = HoodieActiveTimeline.createNewInstantTime
         client.scheduleClusteringAtInstant(firstScheduleInstant, HOption.empty())
@@ -164,7 +164,7 @@ class TestClusteringProcedure extends HoodieSparkProcedureTestBase {
         spark.sql(s"insert into $tableName values(1, 'a1', 10, 1000)")
         spark.sql(s"insert into $tableName values(2, 'a2', 10, 1001)")
         spark.sql(s"insert into $tableName values(3, 'a3', 10, 1002)")
-        val client = HoodieCLIUtils.createHoodieClientFromPath(spark, basePath, Map.empty)
+        val client = HoodieCLIUtils.createHoodieWriteClient(spark, basePath, Map.empty, Option(tableName))
         // Generate the first clustering plan
         val firstScheduleInstant = HoodieActiveTimeline.createNewInstantTime
         client.scheduleClusteringAtInstant(firstScheduleInstant, HOption.empty())
@@ -667,6 +667,38 @@ class TestClusteringProcedure extends HoodieSparkProcedureTestBase {
           Seq(6, "a6", 10.0, 1012)
         )
       }
+    }
+  }
+
+  test("Test Call run_clustering with unsupported bucket index") {
+    withTempDir { tmp =>
+      val tableName = generateTableName
+      val basePath = s"${tmp.getCanonicalPath}/$tableName"
+      spark.sql(
+        s"""
+           |create table $tableName (
+           |  id int,
+           |  name string,
+           |  price double,
+           |  ts long
+           |) using hudi
+           | tblproperties (
+           |  primaryKey ='id',
+           |  type = 'cow',
+           |  preCombineField = 'ts',
+           |  hoodie.index.type = 'BUCKET',
+           |  hoodie.bucket.index.hash.field = 'id',
+           |  hoodie.datasource.write.recordkey.field = 'id'
+           | )
+           | partitioned by (ts)
+           | location '$basePath'
+     """.stripMargin)
+
+      spark.sql(s"insert into $tableName values(1, 'a1', 10, 1010)")
+      spark.sql(s"insert into $tableName values(2, 'a2', 10, 1010)")
+
+      checkExceptionContain(s"call run_clustering(table => '$tableName')")(
+        "Executor SparkExecuteClusteringCommitActionExecutor is not compatible with table layout HoodieSimpleBucketLayout")
     }
   }
 

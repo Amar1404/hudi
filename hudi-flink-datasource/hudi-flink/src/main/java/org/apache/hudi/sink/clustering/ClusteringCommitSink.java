@@ -147,6 +147,17 @@ public class ClusteringCommitSink extends CleanFunction<ClusteringCommitEvent> {
         .flatMap(Collection::stream)
         .collect(Collectors.toList());
 
+    long numErrorRecords = statuses.stream().map(WriteStatus::getTotalErrorRecords).reduce(Long::sum).orElse(0L);
+
+    if (numErrorRecords > 0 && !this.conf.getBoolean(FlinkOptions.IGNORE_FAILED)) {
+      // handle failure case
+      LOG.error("Got {} error records during clustering of instant {},\n"
+          + "option '{}' is configured as false,"
+          + "rolls back the clustering", numErrorRecords, instant, FlinkOptions.IGNORE_FAILED.key());
+      ClusteringUtil.rollbackClustering(table, writeClient, instant);
+      return;
+    }
+
     HoodieWriteMetadata<List<WriteStatus>> writeMetadata = new HoodieWriteMetadata<>();
     writeMetadata.setWriteStatuses(statuses);
     writeMetadata.setWriteStats(statuses.stream().map(WriteStatus::getStat).collect(Collectors.toList()));
@@ -168,7 +179,7 @@ public class ClusteringCommitSink extends CleanFunction<ClusteringCommitEvent> {
         TableServiceType.CLUSTER, writeMetadata.getCommitMetadata().get(), table, instant);
 
     // whether to clean up the input base parquet files used for clustering
-    if (!conf.getBoolean(FlinkOptions.CLEAN_ASYNC_ENABLED)) {
+    if (!conf.getBoolean(FlinkOptions.CLEAN_ASYNC_ENABLED) && !isCleaning) {
       LOG.info("Running inline clean");
       this.writeClient.clean();
     }

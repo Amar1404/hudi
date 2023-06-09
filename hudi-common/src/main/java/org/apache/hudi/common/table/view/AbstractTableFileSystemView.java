@@ -73,11 +73,15 @@ import static org.apache.hudi.common.table.timeline.HoodieTimeline.GREATER_THAN_
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.METADATA_BOOTSTRAP_INSTANT_TS;
 
 /**
- * Common thread-safe implementation for multiple TableFileSystemView Implementations. Provides uniform handling of (a)
- * Loading file-system views from underlying file-system (b) Pending compaction operations and changing file-system
- * views based on that (c) Thread-safety in loading and managing file system views for this table. (d) resetting
- * file-system views The actual mechanism of fetching file slices from different view storages is delegated to
- * sub-classes.
+ * Common thread-safe implementation for multiple TableFileSystemView Implementations.
+ * Provides uniform handling of:
+ * <ul>
+ *   <li>Loading file-system views from underlying file-system;</li>
+ *   <li>Pending compaction operations and changing file-system views based on that;</li>
+ *   <li>Thread-safety in loading and managing file system views for this table;</li>
+ *   <li>resetting file-system views.</li>
+ * </ul>
+ * The actual mechanism of fetching file slices from different view storages is delegated to sub-classes.
  */
 public abstract class AbstractTableFileSystemView implements SyncableFileSystemView, Serializable {
 
@@ -95,8 +99,8 @@ public abstract class AbstractTableFileSystemView implements SyncableFileSystemV
   // Locks to control concurrency. Sync operations use write-lock blocking all fetch operations.
   // For the common-case, we allow concurrent read of single or multiple partitions
   private final ReentrantReadWriteLock globalLock = new ReentrantReadWriteLock();
-  private final ReadLock readLock = globalLock.readLock();
-  private final WriteLock writeLock = globalLock.writeLock();
+  protected final ReadLock readLock = globalLock.readLock();
+  protected final WriteLock writeLock = globalLock.writeLock();
 
   private BootstrapIndex bootstrapIndex;
 
@@ -247,7 +251,9 @@ public abstract class AbstractTableFileSystemView implements SyncableFileSystemV
       }
     });
 
-    Map<HoodieFileGroupId, HoodieInstant> replacedFileGroups = resultStream.collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    // Duplicate key error when insert_overwrite same partition in multi writer, keep the instant with greater timestamp when the file group id conflicts
+    Map<HoodieFileGroupId, HoodieInstant> replacedFileGroups = resultStream.collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
+        (instance1, instance2) -> HoodieTimeline.compareTimestamps(instance1.getTimestamp(), HoodieTimeline.LESSER_THAN, instance2.getTimestamp()) ? instance2 : instance1));
     resetReplacedFileGroups(replacedFileGroups);
     LOG.info("Took " + hoodieTimer.endTimer() + " ms to read  " + replacedTimeline.countInstants() + " instants, "
         + replacedFileGroups.size() + " replaced file groups");
@@ -257,6 +263,8 @@ public abstract class AbstractTableFileSystemView implements SyncableFileSystemV
   public void close() {
     try {
       writeLock.lock();
+      this.metaClient = null;
+      this.visibleCommitsAndCompactionTimeline = null;
       clear();
     } finally {
       writeLock.unlock();
@@ -265,6 +273,8 @@ public abstract class AbstractTableFileSystemView implements SyncableFileSystemV
 
   /**
    * Clears the partition Map and reset view states.
+   * <p>
+   * NOTE: The logic MUST BE guarded by the write lock.
    */
   @Override
   public void reset() {
@@ -281,7 +291,7 @@ public abstract class AbstractTableFileSystemView implements SyncableFileSystemV
   /**
    * Clear the resource.
    */
-  private void clear() {
+  protected void clear() {
     addedPartitions.clear();
     resetViewState();
     bootstrapIndex = null;
@@ -1384,30 +1394,23 @@ public abstract class AbstractTableFileSystemView implements SyncableFileSystemV
     return visibleCommitsAndCompactionTimeline;
   }
 
+  /**
+   * Syncs the file system view from storage to memory.  Performs complete reset of file-system
+   * view. Subsequent partition view calls will load file slices against the latest timeline.
+   * <p>
+   * NOTE: The logic MUST BE guarded by the write lock.
+   */
   @Override
   public void sync() {
-    HoodieTimeline oldTimeline = getTimeline();
-    HoodieTimeline newTimeline = metaClient.reloadActiveTimeline().filterCompletedOrMajorOrMinorCompactionInstants();
     try {
       writeLock.lock();
-      runSync(oldTimeline, newTimeline);
+      HoodieTimeline newTimeline = metaClient.reloadActiveTimeline().filterCompletedOrMajorOrMinorCompactionInstants();
+      clear();
+      // Initialize with new Hoodie timeline.
+      init(metaClient, newTimeline);
     } finally {
       writeLock.unlock();
     }
-  }
-
-  /**
-   * Performs complete reset of file-system view. Subsequent partition view calls will load file slices against latest
-   * timeline
-   *
-   * @param oldTimeline Old Hoodie Timeline
-   * @param newTimeline New Hoodie Timeline
-   */
-  protected void runSync(HoodieTimeline oldTimeline, HoodieTimeline newTimeline) {
-    refreshTimeline(newTimeline);
-    clear();
-    // Initialize with new Hoodie timeline.
-    init(metaClient, newTimeline);
   }
 
   /**

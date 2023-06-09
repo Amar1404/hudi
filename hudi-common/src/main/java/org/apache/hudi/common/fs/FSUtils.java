@@ -33,6 +33,7 @@ import org.apache.hudi.common.util.collection.ImmutablePair;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
+import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.exception.InvalidHoodiePathException;
 import org.apache.hudi.hadoop.CachingPath;
 import org.apache.hudi.metadata.HoodieTableMetadata;
@@ -81,6 +82,7 @@ public class FSUtils {
   // Archive log files are of this pattern - .commits_.archive.1_1-0-1
   public static final Pattern LOG_FILE_PATTERN =
       Pattern.compile("^\\.(.+)_(.*)\\.(log|archive)\\.(\\d+)(_((\\d+)-(\\d+)-(\\d+))(.cdc)?)?");
+  public static final Pattern PREFIX_BY_FILE_ID_PATTERN = Pattern.compile("^(.+)-(\\d+)");
   private static final int MAX_ATTEMPTS_RECOVER_LEASE = 10;
   private static final long MIN_CLEAN_TO_KEEP = 10;
   private static final long MIN_ROLLBACK_TO_KEEP = 10;
@@ -225,7 +227,8 @@ public class FSUtils {
     String fullPartitionPathStr = fullPartitionPath.toString();
 
     if (!fullPartitionPathStr.startsWith(basePath.toString())) {
-      throw new IllegalArgumentException("Partition path does not belong to base-path");
+      throw new IllegalArgumentException("Partition path \"" + fullPartitionPathStr
+          + "\" does not belong to base-path \"" + basePath + "\"");
     }
 
     int partitionStartIndex = fullPartitionPathStr.indexOf(basePath.getName(),
@@ -348,6 +351,17 @@ public class FSUtils {
    */
   public static String createNewFileIdPfx() {
     return UUID.randomUUID().toString();
+  }
+
+  /**
+   * Returns prefix for a file group from fileId.
+   */
+  public static String getFileIdPfxFromFileId(String fileId) {
+    Matcher matcher = PREFIX_BY_FILE_ID_PATTERN.matcher(fileId);
+    if (!matcher.find()) {
+      throw new HoodieValidationException("Failed to get prefix from " + fileId);
+    }
+    return matcher.group(1);
   }
 
   public static String createNewFileId(String idPfx, int id) {
@@ -582,7 +596,7 @@ public class FSUtils {
   /**
    * When a file was opened and the task died without closing the stream, another task executor cannot open because the
    * existing lease will be active. We will try to recover the lease, from HDFS. If a data node went down, it takes
-   * about 10 minutes for the lease to be rocovered. But if the client dies, this should be instant.
+   * about 10 minutes for the lease to be recovered. But if the client dies, this should be instant.
    */
   public static boolean recoverDFSFileLease(final DistributedFileSystem dfs, final Path p)
       throws IOException, InterruptedException {

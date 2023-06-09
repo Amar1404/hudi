@@ -33,16 +33,22 @@ import scala.collection.JavaConverters.{collectionAsScalaIterableConverter, mapA
 
 object HoodieCLIUtils {
 
-  def createHoodieClientFromPath(sparkSession: SparkSession,
-                                 basePath: String,
-                                 conf: Map[String, String]): SparkRDDWriteClient[_] = {
+  def createHoodieWriteClient(sparkSession: SparkSession,
+                              basePath: String,
+                              conf: Map[String, String],
+                              tableName: Option[String]): SparkRDDWriteClient[_] = {
     val metaClient = HoodieTableMetaClient.builder().setBasePath(basePath)
       .setConf(sparkSession.sessionState.newHadoopConf()).build()
     val schemaUtil = new TableSchemaResolver(metaClient)
     val schemaStr = schemaUtil.getTableAvroSchemaWithoutMetadataFields.toString
+    // If tableName is provided, we need to add catalog props
+    val catalogProps = tableName match {
+      case Some(value) => getHoodieCatalogTable(sparkSession, value).catalogProperties
+      case None => Map.empty
+    }
     val finalParameters = HoodieWriterUtils.parametersWithWriteDefaults(
       withSparkConf(sparkSession, Map.empty)(
-        conf + (DataSourceWriteOptions.TABLE_TYPE.key() -> metaClient.getTableType.name()))
+        catalogProps ++ conf + (DataSourceWriteOptions.TABLE_TYPE.key() -> metaClient.getTableType.name()))
     )
 
     val jsc = new JavaSparkContext(sparkSession.sparkContext)

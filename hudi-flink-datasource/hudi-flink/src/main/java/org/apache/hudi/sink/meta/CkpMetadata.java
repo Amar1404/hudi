@@ -21,6 +21,7 @@ package org.apache.hudi.sink.meta;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.util.ValidationUtils;
+import org.apache.hudi.common.util.VisibleForTesting;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.configuration.HadoopConfigurations;
 import org.apache.hudi.exception.HoodieException;
@@ -92,14 +93,13 @@ public class CkpMetadata implements Serializable {
   // -------------------------------------------------------------------------
 
   /**
-   * Initialize the message bus, would keep all the messages.
+   * Initialize the message bus, would clean all the messages
    *
    * <p>This expects to be called by the driver.
    */
   public void bootstrap() throws IOException {
-    if (!fs.exists(path)) {
-      fs.mkdirs(path);
-    }
+    fs.delete(path, true);
+    fs.mkdirs(path);
   }
 
   public void startInstant(String instant) {
@@ -201,6 +201,11 @@ public class CkpMetadata implements Serializable {
     return this.messages.stream().anyMatch(ckpMsg -> instant.equals(ckpMsg.getInstant()) && ckpMsg.isAborted());
   }
 
+  @VisibleForTesting
+  public List<String> getInstantCache() {
+    return this.instantCache;
+  }
+
   // -------------------------------------------------------------------------
   //  Utilities
   // -------------------------------------------------------------------------
@@ -221,6 +226,10 @@ public class CkpMetadata implements Serializable {
   }
 
   private List<CkpMessage> scanCkpMetadata(Path ckpMetaPath) throws IOException {
+    // This is required when the storage is minio
+    if (!this.fs.exists(ckpMetaPath)) {
+      return new ArrayList<>();
+    }
     return Arrays.stream(this.fs.listStatus(ckpMetaPath)).map(CkpMessage::new)
         .collect(Collectors.groupingBy(CkpMessage::getInstant)).values().stream()
         .map(messages -> messages.stream().reduce((x, y) -> {

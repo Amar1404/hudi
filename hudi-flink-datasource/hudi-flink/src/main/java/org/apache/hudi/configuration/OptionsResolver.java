@@ -23,8 +23,10 @@ import org.apache.hudi.common.model.DefaultHoodieRecordPayload;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.cdc.HoodieCDCSupplementalLoggingMode;
 import org.apache.hudi.common.util.StringUtils;
+import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.index.HoodieIndex;
+import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.table.format.FilePathUtils;
 
 import org.apache.flink.configuration.ConfigOption;
@@ -53,8 +55,7 @@ public class OptionsResolver {
   public static boolean isAppendMode(Configuration conf) {
     // 1. inline clustering is supported for COW table;
     // 2. async clustering is supported for both COW and MOR table
-    return isCowTable(conf) && isInsertOperation(conf) && !conf.getBoolean(FlinkOptions.INSERT_CLUSTER)
-        || needsScheduleClustering(conf);
+    return isInsertOperation(conf) && ((isCowTable(conf) && !conf.getBoolean(FlinkOptions.INSERT_CLUSTER)) || isMorTable(conf));
   }
 
   /**
@@ -225,6 +226,21 @@ public class OptionsResolver {
    */
   public static boolean isIncrementalQuery(Configuration conf) {
     return conf.getOptional(FlinkOptions.READ_START_COMMIT).isPresent() || conf.getOptional(FlinkOptions.READ_END_COMMIT).isPresent();
+  }
+
+  /**
+   * Returns whether consistent value will be generated for a logical timestamp type column.
+   */
+  public static boolean isConsistentLogicalTimestampEnabled(Configuration conf) {
+    return conf.getBoolean(KeyGeneratorOptions.KEYGENERATOR_CONSISTENT_LOGICAL_TIMESTAMP_ENABLED.key(),
+        Boolean.parseBoolean(KeyGeneratorOptions.KEYGENERATOR_CONSISTENT_LOGICAL_TIMESTAMP_ENABLED.defaultValue()));
+  }
+
+  /**
+   * Returns whether to commit even when current batch has no data, for flink defaults false
+   */
+  public static boolean allowCommitOnEmptyBatch(Configuration conf) {
+    return conf.getBoolean(HoodieWriteConfig.ALLOW_EMPTY_COMMIT.key(), false);
   }
 
   // -------------------------------------------------------------------------

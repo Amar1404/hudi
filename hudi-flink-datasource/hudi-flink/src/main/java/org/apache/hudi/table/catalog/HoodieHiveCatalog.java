@@ -18,6 +18,7 @@
 
 package org.apache.hudi.table.catalog;
 
+import org.apache.hudi.avro.AvroSchemaUtils;
 import org.apache.hudi.client.HoodieFlinkWriteClient;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieFileFormat;
@@ -417,11 +418,11 @@ public class HoodieHiveCatalog extends AbstractCatalog {
     String path = hiveTable.getSd().getLocation();
     Map<String, String> parameters = hiveTable.getParameters();
     Schema latestTableSchema = StreamerUtil.getLatestTableSchema(path, hiveConf);
-    String pkColumnsStr = parameters.get(FlinkOptions.RECORD_KEY_FIELD.key());
-    List<String> pkColumns = StringUtils.isNullOrEmpty(pkColumnsStr)
-        ? null : StringUtils.split(pkColumnsStr, ",");
     org.apache.flink.table.api.Schema schema;
     if (latestTableSchema != null) {
+      String pkColumnsStr = parameters.get(FlinkOptions.RECORD_KEY_FIELD.key());
+      List<String> pkColumns = StringUtils.isNullOrEmpty(pkColumnsStr)
+          ? null : StringUtils.split(pkColumnsStr, ",");
       // if the table is initialized from spark, the write schema is nullable for pk columns.
       DataType tableDataType = DataTypeUtils.ensureColumnsAsNonNullable(
           AvroSchemaConverter.convertToDataType(latestTableSchema), pkColumns);
@@ -481,7 +482,9 @@ public class HoodieHiveCatalog extends AbstractCatalog {
 
   private void initTableIfNotExists(ObjectPath tablePath, CatalogTable catalogTable) {
     Configuration flinkConf = Configuration.fromMap(catalogTable.getOptions());
-    final String avroSchema = AvroSchemaConverter.convertToSchema(catalogTable.getSchema().toPersistedRowDataType().getLogicalType()).toString();
+    final String avroSchema = AvroSchemaConverter.convertToSchema(
+        catalogTable.getSchema().toPersistedRowDataType().getLogicalType(),
+        AvroSchemaUtils.getAvroRecordQualifiedName(tablePath.getObjectName())).toString();
     flinkConf.setString(FlinkOptions.SOURCE_AVRO_SCHEMA, avroSchema);
 
     // stores two copies of options:
@@ -533,7 +536,7 @@ public class HoodieHiveCatalog extends AbstractCatalog {
         org.apache.hadoop.hive.ql.metadata.Table.getEmptyTable(
             tablePath.getDatabaseName(), tablePath.getObjectName());
 
-    hiveTable.setOwner(UserGroupInformation.getCurrentUser().getUserName());
+    hiveTable.setOwner(UserGroupInformation.getCurrentUser().getShortUserName());
     hiveTable.setCreateTime((int) (System.currentTimeMillis() / 1000));
 
     Map<String, String> properties = new HashMap<>(table.getOptions());

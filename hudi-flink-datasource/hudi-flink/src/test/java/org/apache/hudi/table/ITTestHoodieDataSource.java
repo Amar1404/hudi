@@ -23,6 +23,7 @@ import org.apache.hudi.common.model.DefaultHoodieRecordPayload;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.table.cdc.HoodieCDCSupplementalLoggingMode;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
+import org.apache.hudi.common.util.CollectionUtils;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.table.catalog.HoodieCatalogTestUtils;
 import org.apache.hudi.table.catalog.HoodieHiveCatalog;
@@ -360,6 +361,36 @@ public class ITTestHoodieDataSource {
   }
 
   @Test
+  void testAppendWriteWithClusteringBatchRead() throws Exception {
+    // create filesystem table named source
+    String createSource = TestConfigurations.getFileSourceDDL("source", 4);
+    streamTableEnv.executeSql(createSource);
+
+    String hoodieTableDDL = sql("t1")
+            .option(FlinkOptions.PATH, tempFile.getAbsolutePath())
+            .option(FlinkOptions.OPERATION, "insert")
+            .option(FlinkOptions.CLUSTERING_SCHEDULE_ENABLED,true)
+            .option(FlinkOptions.CLUSTERING_ASYNC_ENABLED, true)
+            .option(FlinkOptions.CLUSTERING_DELTA_COMMITS,2)
+            .option(FlinkOptions.CLUSTERING_TASKS, 1)
+            .option(FlinkOptions.CLEAN_RETAIN_COMMITS, 1)
+            .end();
+    streamTableEnv.executeSql(hoodieTableDDL);
+    String insertInto = "insert into t1 select * from source";
+    execInsertSql(streamTableEnv, insertInto);
+
+    streamTableEnv.getConfig().getConfiguration()
+            .setBoolean("table.dynamic-table-options.enabled", true);
+    final String query = String.format("select * from t1/*+ options('read.start-commit'='%s')*/",
+            FlinkOptions.START_COMMIT_EARLIEST);
+
+    List<Row> rows = CollectionUtil.iterableToList(() -> streamTableEnv.sqlQuery(query).execute().collect());
+    // batch read will not lose data when cleaned clustered files.
+    assertRowsEquals(rows, CollectionUtils.combine(TestData.DATA_SET_SOURCE_INSERT_FIRST_COMMIT,
+        TestData.DATA_SET_SOURCE_INSERT_LATEST_COMMIT));
+  }
+
+  @Test
   void testStreamWriteWithCleaning() {
     // create filesystem table named source
 
@@ -678,14 +709,16 @@ public class ITTestHoodieDataSource {
         + "(1,'Danny',TIMESTAMP '2021-12-01 01:02:01.100001'),\n"
         + "(2,'Stephen',TIMESTAMP '2021-12-02 03:04:02.200002'),\n"
         + "(3,'Julian',TIMESTAMP '2021-12-03 13:14:03.300003'),\n"
-        + "(4,'Fabian',TIMESTAMP '2021-12-04 15:16:04.400004')";
+        + "(4,'Fabian',TIMESTAMP '2021-12-04 15:16:04.400004'),\n"
+        + "(5,'Tom',TIMESTAMP '2721-12-04 15:16:04.500005')";
     execInsertSql(streamTableEnv, insertInto);
 
     final String expected = "["
         + "+I[1, Danny, 2021-12-01T01:02:01.100001], "
         + "+I[2, Stephen, 2021-12-02T03:04:02.200002], "
         + "+I[3, Julian, 2021-12-03T13:14:03.300003], "
-        + "+I[4, Fabian, 2021-12-04T15:16:04.400004]]";
+        + "+I[4, Fabian, 2021-12-04T15:16:04.400004], "
+        + "+I[5, Tom, 2721-12-04T15:16:04.500005]]";
 
     List<Row> result = execSelectSql(streamTableEnv, "select * from t1", execMode);
     assertRowsEquals(result, expected);
@@ -1636,6 +1669,34 @@ public class ITTestHoodieDataSource {
     assertRowsEquals(result2, "[+I[3]]");
   }
 
+  @Test
+  void testWriteReadWithComputedColumnsInTheMiddle() {
+    TableEnvironment tableEnv = batchTableEnv;
+    String createTable = sql("t1")
+        .field("f0 int")
+        .field("f1 int")
+        .field("f2 as f0 + f1")
+        .field("f3 varchar(10)")
+        .option(FlinkOptions.PATH, tempFile.getAbsolutePath())
+        .option(FlinkOptions.PRECOMBINE_FIELD, "f1")
+        .pkField("f0")
+        .noPartition()
+        .end();
+    tableEnv.executeSql(createTable);
+
+    String insertInto = "insert into t1(f0, f1, f3) values\n"
+        + "(1, 2, 'abc')";
+    execInsertSql(tableEnv, insertInto);
+
+    List<Row> result1 = CollectionUtil.iterableToList(
+        () -> tableEnv.sqlQuery("select * from t1").execute().collect());
+    assertRowsEquals(result1, "[+I[1, 2, 3, abc]]");
+
+    List<Row> result2 = CollectionUtil.iterableToList(
+        () -> tableEnv.sqlQuery("select f2 from t1").execute().collect());
+    assertRowsEquals(result2, "[+I[3]]");
+  }
+
   @ParameterizedTest
   @EnumSource(value = HoodieTableType.class)
   void testWriteReadWithLocalTimestamp(HoodieTableType tableType) {
@@ -1665,6 +1726,135 @@ public class ITTestHoodieDataSource {
         + "+I[1, abc, 1970-01-01T00:00:01Z, 1970-01-01T00:00:02Z], "
         + "+I[2, def, 1970-01-01T00:00:03Z, 1970-01-01T00:00:04Z]]";
     assertRowsEquals(result, expected);
+  }
+
+  @ParameterizedTest
+  @MethodSource("tableTypeQueryTypeNumInsertAndCompactionDeltaCommitsParams")
+  void testReadMetaFields(HoodieTableType tableType, String queryType, int numInsertBatches, int compactionDeltaCommits) throws Exception {
+    String path = tempFile.getAbsolutePath();
+    String hoodieTableDDL = sql("t1")
+        .field("id int")
+        .field("name varchar(10)")
+        .field("ts timestamp(6)")
+        .field("`partition` varchar(10)")
+        .pkField("id")
+        .partitionField("partition")
+        .option(FlinkOptions.TABLE_TYPE, tableType)
+        .option(FlinkOptions.QUERY_TYPE, queryType)
+        .option(FlinkOptions.COMPACTION_ASYNC_ENABLED, true)
+        .option(FlinkOptions.COMPACTION_DELTA_COMMITS, compactionDeltaCommits)
+        .option(FlinkOptions.PATH, path)
+        .end();
+    batchTableEnv.executeSql(hoodieTableDDL);
+
+    final String[] insertInto = new String[] {
+        "insert into t1 values(1,'Danny',TIMESTAMP '2021-12-01 01:02:01.100001', 'par1')",
+        "insert into t1 values(2,'Stephen',TIMESTAMP '2021-12-02 03:04:02.200002', 'par2')",
+        "insert into t1 values(3,'Julian',TIMESTAMP '2021-12-03 13:14:03.300003', 'par3')"};
+
+    // Queries without meta fields.
+    String[] template1 = new String[] {
+        "+I[1, Danny, 2021-12-01T01:02:01.100001, par1]",
+        ", +I[2, Stephen, 2021-12-02T03:04:02.200002, par2]",
+        ", +I[3, Julian, 2021-12-03T13:14:03.300003, par3]"
+    };
+
+    // Meta field '_hoodie_commit_time' in the first position.
+    String[] template2 = new String[] {
+        "+I[%s, 1, par1, 1, Danny, 2021-12-01T01:02:01.100001, par1]",
+        ", +I[%s, 2, par2, 2, Stephen, 2021-12-02T03:04:02.200002, par2]",
+        ", +I[%s, 3, par3, 3, Julian, 2021-12-03T13:14:03.300003, par3]"
+    };
+
+    // Meta fields at random positions.
+    String[] template3 = new String[] {
+        "+I[1, %s, Danny, 1, 2021-12-01T01:02:01.100001, par1, par1]",
+        ", +I[2, %s, Stephen, 2, 2021-12-02T03:04:02.200002, par2, par2]",
+        ", +I[3, %s, Julian, 3, 2021-12-03T13:14:03.300003, par3, par3]"
+    };
+
+    StringBuilder expected1 = new StringBuilder();
+    StringBuilder expected2 = new StringBuilder();
+    StringBuilder expected3 = new StringBuilder();
+
+    expected1.append("[");
+    expected2.append("[");
+    expected3.append("[");
+    for (int i = 0; i < numInsertBatches; i++) {
+      execInsertSql(batchTableEnv, insertInto[i]);
+      String commitTime = tableType.equals(HoodieTableType.MERGE_ON_READ)
+          ? TestUtils.getLastDeltaCompleteInstant(path) : TestUtils.getLastCompleteInstant(path);
+      expected1.append(template1[i]);
+      expected2.append(String.format(template2[i], commitTime));
+      expected3.append(String.format(template3[i], commitTime));
+    }
+    expected1.append("]");
+    expected2.append("]");
+    expected3.append("]");
+    String readHoodieTableDDL;
+    batchTableEnv.executeSql("drop table t1");
+    readHoodieTableDDL = sql("t1")
+        .field("id int")
+        .field("name varchar(10)")
+        .field("ts timestamp(6)")
+        .field("`partition` varchar(10)")
+        .pkField("id")
+        .partitionField("partition")
+        .option(FlinkOptions.TABLE_TYPE, tableType)
+        .option(FlinkOptions.QUERY_TYPE, queryType)
+        .option(FlinkOptions.COMPACTION_ASYNC_ENABLED, true)
+        .option(FlinkOptions.COMPACTION_DELTA_COMMITS, compactionDeltaCommits)
+        .option(FlinkOptions.PATH, path)
+        .end();
+    batchTableEnv.executeSql(readHoodieTableDDL);
+
+    List<Row> result = execSelectSql(batchTableEnv, "select * from t1", ExecMode.BATCH);
+    assertRowsEquals(result, expected1.toString());
+
+    batchTableEnv.executeSql("drop table t1");
+    readHoodieTableDDL = sql("t1")
+        .field("_hoodie_commit_time string")
+        .field("_hoodie_record_key string")
+        .field("_hoodie_partition_path string")
+        .field("id int")
+        .field("name varchar(10)")
+        .field("ts timestamp(6)")
+        .field("`partition` varchar(10)")
+        .pkField("id")
+        .partitionField("partition")
+        .option(FlinkOptions.TABLE_TYPE, tableType)
+        .option(FlinkOptions.QUERY_TYPE, queryType)
+        .option(FlinkOptions.COMPACTION_ASYNC_ENABLED, true)
+        .option(FlinkOptions.COMPACTION_DELTA_COMMITS, compactionDeltaCommits)
+        .option(FlinkOptions.PATH, path)
+        .end();
+    batchTableEnv.executeSql(readHoodieTableDDL);
+
+    result = execSelectSql(batchTableEnv, "select * from t1", ExecMode.BATCH);
+    assertRowsEquals(result, expected2.toString());
+
+    batchTableEnv.executeSql("drop table t1");
+    readHoodieTableDDL = sql("t1")
+        .field("id int")
+        .field("_hoodie_commit_time string")
+        .field("name varchar(10)")
+        .field("_hoodie_record_key string")
+        .field("ts timestamp(6)")
+        .field("_hoodie_partition_path string")
+        .field("`partition` varchar(10)")
+        .pkField("id")
+        .partitionField("partition")
+        .option(FlinkOptions.TABLE_TYPE, tableType)
+        .option(FlinkOptions.QUERY_TYPE, queryType)
+        .option(FlinkOptions.COMPACTION_ASYNC_ENABLED, true)
+        .option(FlinkOptions.COMPACTION_DELTA_COMMITS, compactionDeltaCommits)
+        .option(FlinkOptions.PATH, path)
+        .end();
+    batchTableEnv.executeSql(readHoodieTableDDL);
+
+    result = execSelectSql(batchTableEnv, "select * from t1", ExecMode.BATCH);
+    assertRowsEquals(result, expected3.toString());
+
   }
 
   // -------------------------------------------------------------------------
@@ -1711,6 +1901,19 @@ public class ITTestHoodieDataSource {
             {HoodieTableType.MERGE_ON_READ, false},
             {HoodieTableType.MERGE_ON_READ, true}};
     return Stream.of(data).map(Arguments::of);
+  }
+
+  /**
+   * Return test params => (HoodieTableType, query type, num insert batches, num compaction delta commits).
+   */
+  private static Stream<Arguments> tableTypeQueryTypeNumInsertAndCompactionDeltaCommitsParams() {
+    return Arrays.stream(new Object[][] {
+            {HoodieTableType.COPY_ON_WRITE, FlinkOptions.QUERY_TYPE_INCREMENTAL, 1, 1},
+            {HoodieTableType.COPY_ON_WRITE, FlinkOptions.QUERY_TYPE_READ_OPTIMIZED, 1, 1},
+            {HoodieTableType.MERGE_ON_READ, FlinkOptions.QUERY_TYPE_SNAPSHOT, 1, 1},
+            {HoodieTableType.MERGE_ON_READ, FlinkOptions.QUERY_TYPE_SNAPSHOT, 1, 3},
+            {HoodieTableType.MERGE_ON_READ, FlinkOptions.QUERY_TYPE_SNAPSHOT, 3, 2}
+    }).map(Arguments::of);
   }
 
   /**

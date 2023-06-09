@@ -29,7 +29,7 @@
   <groupId>org.apache.hudi</groupId>
   <artifactId>hudi</artifactId>
   <packaging>pom</packaging>
-  <version>0.13.0</version>
+  <version>0.13.1</version>
   <description>Apache Hudi brings stream style processing on big data</description>
   <url>https://github.com/apache/hudi</url>
   <name>Hudi</name>
@@ -89,7 +89,7 @@
     <genjavadoc-plugin.version>0.15</genjavadoc-plugin.version>
     <build-helper-maven-plugin.version>1.7</build-helper-maven-plugin.version>
     <maven-enforcer-plugin.version>3.0.0-M1</maven-enforcer-plugin.version>
-    <maven-docker-plugin.version>0.37.0</maven-docker-plugin.version>
+    <maven-docker-plugin.version>0.42.1</maven-docker-plugin.version>
 
     <java.version>1.8</java.version>
     <kryo.shaded.version>4.0.2</kryo.shaded.version>
@@ -761,6 +761,7 @@
             </execution>
           </executions>
           <configuration>
+            <protocArtifact>com.google.protobuf:protoc:${proto.version}</protocArtifact>
             <protocVersion>${protoc.version}</protocVersion>
             <includeStdTypes>true</includeStdTypes>
           </configuration>
@@ -954,6 +955,12 @@
         <artifactId>spark-hive_${scala.binary.version}</artifactId>
         <version>${spark.version}</version>
         <scope>provided</scope>
+        <exclusions>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>apache-log4j-extras</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.spark</groupId>
@@ -1444,6 +1451,10 @@
             <artifactId>log4j</artifactId>
           </exclusion>
           <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>apache-log4j-extras</artifactId>
+          </exclusion>
+          <exclusion>
             <groupId>org.apache.hbase</groupId>
             <artifactId>*</artifactId>
           </exclusion>
@@ -1494,6 +1505,10 @@
           <exclusion>
             <groupId>log4j</groupId>
             <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>apache-log4j-extras</artifactId>
           </exclusion>
           <exclusion>
             <groupId>org.apache.hbase</groupId>
@@ -2183,6 +2198,7 @@
         <spark3.version>${spark33.version}</spark3.version>
         <spark.version>${spark3.version}</spark.version>
         <sparkbundle.version>3</sparkbundle.version>
+        <scala12.version>2.12.15</scala12.version>
         <scala.version>${scala12.version}</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <hudi.spark.module>hudi-spark3.3.x</hudi.spark.module>
@@ -2196,7 +2212,7 @@
                    bringing these file-formats as dependencies as well, we need to make sure that versions are
                    synchronized to avoid classpath ambiguity -->
         <parquet.version>1.12.2</parquet.version>
-        <orc.spark.version>1.7.4</orc.spark.version>
+        <orc.spark.version>1.7.8</orc.spark.version>
         <avro.version>1.11.1</avro.version>
         <antlr.version>4.8</antlr.version>
         <fasterxml.spark3.version>2.13.3</fasterxml.spark3.version>
@@ -2307,6 +2323,7 @@
         <spark3.version>${spark33.version}</spark3.version>
         <spark.version>${spark3.version}</spark.version>
         <sparkbundle.version>3.3</sparkbundle.version>
+        <scala12.version>2.12.15</scala12.version>
         <scala.version>${scala12.version}</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <hudi.spark.module>hudi-spark3.3.x</hudi.spark.module>
@@ -2320,7 +2337,7 @@
                    bringing these file-formats as dependencies as well, we need to make sure that versions are
                    synchronized to avoid classpath ambiguity -->
         <parquet.version>1.12.2</parquet.version>
-        <orc.spark.version>1.7.4</orc.spark.version>
+        <orc.spark.version>1.7.8</orc.spark.version>
         <avro.version>1.11.1</avro.version>
         <antlr.version>4.8</antlr.version>
         <fasterxml.spark3.version>2.13.3</fasterxml.spark3.version>

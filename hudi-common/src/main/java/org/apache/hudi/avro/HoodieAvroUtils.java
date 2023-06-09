@@ -62,6 +62,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.sql.Date;
@@ -727,29 +728,24 @@ public class HoodieAvroUtils {
   }
 
   /**
-   * Gets record column values into one object.
+   * Gets record column values into object array.
    *
    * @param record  Hoodie record.
    * @param columns Names of the columns to get values.
    * @param schema  {@link Schema} instance.
-   * @return Column value if a single column, or concatenated String values by comma.
+   * @return Column value.
    */
-  public static Object getRecordColumnValues(HoodieAvroRecord record,
-                                             String[] columns,
-                                             Schema schema, boolean consistentLogicalTimestampEnabled) {
+  public static Object[] getRecordColumnValues(HoodieAvroRecord record,
+                                               String[] columns,
+                                               Schema schema,
+                                               boolean consistentLogicalTimestampEnabled) {
     try {
       GenericRecord genericRecord = (GenericRecord) ((HoodieAvroIndexedRecord) record.toIndexedRecord(schema, new Properties()).get()).getData();
-      if (columns.length == 1) {
-        return HoodieAvroUtils.getNestedFieldVal(genericRecord, columns[0], true, consistentLogicalTimestampEnabled);
-      } else {
-        // TODO this is inefficient, instead we can simply return array of Comparable
-        StringBuilder sb = new StringBuilder();
-        for (String col : columns) {
-          sb.append(HoodieAvroUtils.getNestedFieldValAsString(genericRecord, col, true, consistentLogicalTimestampEnabled));
-        }
-
-        return sb.toString();
+      List<Object> list = new ArrayList<>();
+      for (String col : columns) {
+        list.add(HoodieAvroUtils.getNestedFieldVal(genericRecord, col, true, consistentLogicalTimestampEnabled));
       }
+      return list.toArray();
     } catch (IOException e) {
       throw new HoodieIOException("Unable to read record with key:" + record.getKey(), e);
     }
@@ -993,15 +989,8 @@ public class HoodieAvroUtils {
                   || oldSchema.getType() == Schema.Type.LONG
                   || oldSchema.getType() == Schema.Type.FLOAT) {
             LogicalTypes.Decimal decimal = (LogicalTypes.Decimal) newSchema.getLogicalType();
-            BigDecimal bigDecimal = null;
-            if (oldSchema.getType() == Schema.Type.STRING) {
-              bigDecimal = new java.math.BigDecimal(oldValue.toString())
-                      .setScale(decimal.getScale());
-            } else {
-              // Due to Java, there will be precision problems in direct conversion, we should use string instead of use double
-              bigDecimal = new java.math.BigDecimal(oldValue.toString())
-                      .setScale(decimal.getScale());
-            }
+            // due to Java, there will be precision problems in direct conversion, we should use string instead of use double
+            BigDecimal bigDecimal = new java.math.BigDecimal(oldValue.toString()).setScale(decimal.getScale(), RoundingMode.HALF_UP);
             return DECIMAL_CONVERSION.toFixed(bigDecimal, newSchema, newSchema.getLogicalType());
           }
         }
@@ -1053,7 +1042,7 @@ public class HoodieAvroUtils {
     } else if (schema.getTypes().size() == 1) {
       actualSchema = schema.getTypes().get(0);
     } else {
-      // deal complex union. this should not happened in hoodie,
+      // deal complex union. this should not happen in hoodie,
       // since flink/spark do not write this type.
       int i = GenericData.get().resolveUnion(schema, data);
       actualSchema = schema.getTypes().get(i);

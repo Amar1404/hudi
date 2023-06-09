@@ -21,6 +21,7 @@ package org.apache.hudi.table.action.clean;
 import org.apache.hudi.avro.model.HoodieCleanMetadata;
 import org.apache.hudi.avro.model.HoodieSavepointMetadata;
 import org.apache.hudi.common.engine.HoodieEngineContext;
+import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.CleanFileInfo;
 import org.apache.hudi.common.model.CompactionOperation;
 import org.apache.hudi.common.model.FileSlice;
@@ -42,7 +43,6 @@ import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.HoodieSavepointException;
-import org.apache.hudi.metadata.FileSystemBackedTableMetadata;
 import org.apache.hudi.table.HoodieTable;
 
 import org.apache.log4j.LogManager;
@@ -51,7 +51,6 @@ import org.apache.log4j.Logger;
 import java.io.IOException;
 import java.io.Serializable;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -162,7 +161,8 @@ public class CleanPlanner<T, I, K, O> implements Serializable {
           HoodieCleanMetadata cleanMetadata = TimelineMetadataUtils
                   .deserializeHoodieCleanMetadata(hoodieTable.getActiveTimeline().getInstantDetails(lastClean.get()).get());
           if ((cleanMetadata.getEarliestCommitToRetain() != null)
-                  && (cleanMetadata.getEarliestCommitToRetain().length() > 0)) {
+                  && (cleanMetadata.getEarliestCommitToRetain().length() > 0)
+                  && !hoodieTable.getActiveTimeline().isBeforeTimelineStarts(cleanMetadata.getEarliestCommitToRetain())) {
             return getPartitionPathsForIncrementalCleaning(cleanMetadata, instantToRetain);
           }
         }
@@ -209,15 +209,7 @@ public class CleanPlanner<T, I, K, O> implements Serializable {
    */
   private List<String> getPartitionPathsForFullCleaning() {
     // Go to brute force mode of scanning all partitions
-    try {
-      // Because the partition of BaseTableMetadata has been deleted,
-      // all partition information can only be obtained from FileSystemBackedTableMetadata.
-      FileSystemBackedTableMetadata fsBackedTableMetadata = new FileSystemBackedTableMetadata(context,
-          context.getHadoopConf(), config.getBasePath(), config.shouldAssumeDatePartitioning());
-      return fsBackedTableMetadata.getAllPartitionPaths();
-    } catch (IOException e) {
-      return Collections.emptyList();
-    }
+    return FSUtils.getAllPartitionPaths(context, config.getMetadataConfig(), config.getBasePath());
   }
 
   /**
@@ -489,7 +481,7 @@ public class CleanPlanner<T, I, K, O> implements Serializable {
       }
     } else if (config.getCleanerPolicy() == HoodieCleaningPolicy.KEEP_LATEST_BY_HOURS) {
       Instant instant = Instant.now();
-      ZonedDateTime currentDateTime = ZonedDateTime.ofInstant(instant, ZoneId.systemDefault());
+      ZonedDateTime currentDateTime = ZonedDateTime.ofInstant(instant, hoodieTable.getMetaClient().getTableConfig().getTimelineTimezone().getZoneId());
       String earliestTimeToRetain = HoodieActiveTimeline.formatDate(Date.from(currentDateTime.minusHours(hoursRetained).toInstant()));
       earliestCommitToRetain = Option.fromJavaOptional(commitTimeline.getInstantsAsStream().filter(i -> HoodieTimeline.compareTimestamps(i.getTimestamp(),
               HoodieTimeline.GREATER_THAN_OR_EQUALS, earliestTimeToRetain)).findFirst());
